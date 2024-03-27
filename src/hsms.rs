@@ -1,8 +1,5 @@
-use std::convert::Infallible;
-use bincode::Error;
 use num_enum::{IntoPrimitive, TryFromPrimitive, TryFromPrimitiveError};
 use serde::{Deserialize, Serialize};
-
 use crate::utils::serialize;
 /**
  *@brief HSMSMessage
@@ -241,20 +238,60 @@ impl HSMSHeader {
     fn get_session_type(&self) -> Result<SessionType, TryFromPrimitiveError<SessionType>> {
         Ok(SessionType::try_from(self.s_type)?)
     }
+    fn len(&self)->u32{
+        10
+    }
 }
 
-#[derive(Debug,Clone,Eq, PartialEq,Serialize,Deserialize)]
+#[derive(Debug,Clone,Eq, PartialEq)]
 struct HSMSMessage{
     message_length:u32,
     hsms_header:HSMSHeader,
-    message_text:Vec<u8>
+    message_text:Option<Vec<u8>>
+}
+
+impl HSMSMessage {
+    fn new(hsms_header:HSMSHeader,message_text:&Vec<u8>)->HSMSMessage{
+        HSMSMessage{
+            message_length:hsms_header.len()+message_text.len() as u32,
+            hsms_header: hsms_header,
+            message_text:Some(message_text.to_vec())
+        }
+    }
+
+    fn from_bytes(vec:Vec<u8>)->Result<HSMSMessage,&'static str>{
+        if vec.len()<14{
+            return Err("Size less than 14");
+        }
+        let message_length:u32 = bincode::deserialize(&vec[0..4]).unwrap();
+        let hsms_header:HSMSHeader = serialize::deserialize_from_bytes(&vec[4..14])
+            .expect("Deserialize hsms header fail");
+        let mut message_text = None;
+        if vec.len()>14{
+            message_text = Some(vec[14..].to_vec());
+        }
+        let hsms_message = HSMSMessage{
+            message_length: message_length,
+            hsms_header: hsms_header,
+            message_text: message_text,
+        };
+        Ok(hsms_message)
+    }
+
+    fn to_bytes(&self)->Vec<u8>{
+        let mut vec:Vec<u8>  = bincode::serialize(&self.message_length).unwrap();
+        vec.append(&mut serialize::serialize(&self.hsms_header));
+        if self.message_text.is_some(){
+            vec.append(&mut self.message_text.clone().unwrap());
+        }
+        vec
+    }
+
 }
 
 
 #[cfg(test)]
 mod tests{
-    use std::fs::File;
-    use std::io::BufReader;
     use super::*;
 
     #[test]
@@ -302,14 +339,14 @@ mod tests{
             system_bytes: 0x11111111,
         };
         let hsms_header_select_req_new=HSMSHeader::new(SessionType::SelectReq,
-                                                  0xFFFF,
-                                                  0x8000,
-                                                  0x0001,
-                                                  0,
-                                                  0x80,
-                                                  0x01,
-                                                  0,
-                                                  0x11111111);
+                                                       0xFFFF,
+                                                       0x8000,
+                                                       0x0001,
+                                                       0,
+                                                       0x80,
+                                                       0x01,
+                                                       0,
+                                                       0x11111111);
         assert_eq!(hsms_header_select_req,hsms_header_select_req_new);
     }
     //todo!
@@ -341,11 +378,11 @@ mod tests{
     #[test]
     fn test_serialize_session_id(){
         let session_id =SessionID{session_id:0x8FFF};
-       let session_id_bytes =  serialize::serialize(&session_id);
+        let session_id_bytes =  serialize::serialize(&session_id);
         assert_eq!(session_id_bytes,vec![0xFF,0x8F]);
     }
     #[test]
-     fn test_deserialize_session_id_from_bytes(){
+    fn test_deserialize_session_id_from_bytes(){
         let session_id =SessionID{session_id:0x8FFF};
         let mut session_vec:Vec<u8> = vec![0xFF,0x8F];
         let session_id_bytes:SessionID =  serialize::deserialize_from_bytes(&mut session_vec).unwrap();
@@ -362,4 +399,163 @@ mod tests{
     //     let session_id_bytes:SessionID =  serialize::deserialize(&mut reader).await?;
     //     assert_eq!(session_id_bytes,session_id);
     // }
+
+    #[test]
+    fn test_serialize_header_byte2(){
+        let header_byte2 = HeaderByte2{header_byte2:0x81};
+        let header_byte2_bytes =  serialize::serialize(&header_byte2);
+        assert_eq!(header_byte2_bytes,vec![0x81]);
+    }
+    #[test]
+    fn test_deserialize_header_byte2_from_bytes(){
+        let header_byte2 = HeaderByte2{header_byte2:0x81};
+        let mut header_byte2_vec:Vec<u8> = vec![0x81];
+        let header_byte2_bytes:HeaderByte2 =  serialize::deserialize_from_bytes(& mut header_byte2_vec).unwrap();
+        assert_eq!(header_byte2_bytes,header_byte2);
+    }
+    #[test]
+    fn test_serialize_hsms_header(){
+        let hsms_header = HSMSHeader{
+            session_id: SessionID {session_id:0xFFFF},
+            header_byte2: HeaderByte2 {header_byte2:0},
+            header_byte3: 0,
+            p_type: 0,
+            s_type: 1,
+            system_bytes: 0x11111111,
+        };
+        let hsms_header_bytes = serialize::serialize(&hsms_header);
+        assert_eq!(hsms_header_bytes,vec![0xFF,0xFF,0x00,0x00,0x00,0x01,0x11,0x11,0x11,0x011]);
+    }
+    #[test]
+    fn test_deserialize_hsms_header(){
+        let hsms_header_from_bytes:HSMSHeader = serialize::deserialize_from_bytes(&vec![0xFF,0xFF,0x00,0x00,0x00,0x01,0x11,0x11,0x11,0x011]).unwrap();
+        let hsms_header = HSMSHeader{
+            session_id: SessionID {session_id:0xFFFF},
+            header_byte2: HeaderByte2 {header_byte2:0},
+            header_byte3: 0,
+            p_type: 0,
+            s_type: 1,
+            system_bytes: 0x11111111,
+        };
+        assert_eq!(hsms_header_from_bytes,hsms_header);
+    }
+
+
+    #[test]
+    fn test_hsms_message_new(){
+        let hsms_header = HSMSHeader{
+            session_id: SessionID {session_id:0xFFFF},
+            header_byte2: HeaderByte2 {header_byte2:0},
+            header_byte3: 0,
+            p_type: 0,
+            s_type: 1,
+            system_bytes: 0x11111111,
+        };
+        let hsms_message = HSMSMessage{
+            message_length:10,
+            hsms_header:hsms_header.clone(),
+            message_text:Some(vec![])
+        };
+
+        let hsms_message_new = HSMSMessage::new(hsms_header,&vec![]);
+        assert_eq!(hsms_message,hsms_message_new);
+
+        let hsms_header_with_text = HSMSHeader{
+            session_id: SessionID {session_id:0x8001},
+            header_byte2: HeaderByte2 {header_byte2:0x81},
+            header_byte3: 3,
+            p_type: 0,
+            s_type: 0,
+            system_bytes: 0x11111111,
+        };
+        let hsms_message_with_text = HSMSMessage{
+            message_length:12,
+            hsms_header:hsms_header_with_text.clone(),
+            message_text:Some(vec![0x01,0x02])
+        };
+
+        let hsms_message_new_with_text = HSMSMessage::new(hsms_header_with_text,&vec![0x01,0x02]);
+        assert_eq!(hsms_message_with_text,hsms_message_new_with_text);
+    }
+
+    #[test]
+    fn test_hsms_message_to_bytes(){
+        let hsms_header = HSMSHeader{
+            session_id: SessionID {session_id:0xFFFF},
+            header_byte2: HeaderByte2 {header_byte2:0},
+            header_byte3: 0,
+            p_type: 0,
+            s_type: 1,
+            system_bytes: 0x11111111,
+        };
+        let hsms_message = HSMSMessage{
+            message_length:10,
+            hsms_header:hsms_header.clone(),
+            message_text:None
+        };
+
+        let hsms_message_bytes = hsms_message.to_bytes();
+        assert_eq!(hsms_message_bytes,vec![0x0A,0x00,0x00,0x00,0xFF,0xFF,0x00,0x00,0x00,0x01,0x11,0x11,0x11,0x011])
+    }
+    #[test]
+    fn test_hsms_message_to_bytes_with_message(){
+        let hsms_header = HSMSHeader{
+            session_id: SessionID {session_id:0xFFFF},
+            header_byte2: HeaderByte2 {header_byte2:0},
+            header_byte3: 0,
+            p_type: 0,
+            s_type: 0,
+            system_bytes: 0x11111111,
+        };
+        let hsms_message = HSMSMessage{
+            message_length:12,
+            hsms_header:hsms_header.clone(),
+            message_text:Some(vec![0x01,0x02])
+        };
+
+        let hsms_message_bytes = hsms_message.to_bytes();
+        assert_eq!(hsms_message_bytes,vec![0x0C,0x00,0x00,0x00,0xFF,0xFF,0x00,0x00,0x00,0x00,0x11,0x11,0x11,0x011,0x01,0x02])
+    }
+    #[test]
+    fn test_hsms_message_from_bytes(){
+        let hsms_message_from_bytes = HSMSMessage::from_bytes(
+            vec![0x0A,0x00,0x00,0x00,0xFF,0xFF,0x00,0x00,0x00,0x00,0x11,0x11,0x11,0x011]);
+        let hsms_header = HSMSHeader{
+            session_id: SessionID {session_id:0xFFFF},
+            header_byte2: HeaderByte2 {header_byte2:0},
+            header_byte3: 0,
+            p_type: 0,
+            s_type: 0,
+            system_bytes: 0x11111111,
+        };
+        let hsms_message = HSMSMessage{
+            message_length:10,
+            hsms_header:hsms_header.clone(),
+            message_text:None
+        };
+
+        assert_eq!(hsms_message,hsms_message_from_bytes.unwrap());
+    }
+    #[test]
+    fn test_hsms_message_from_bytes_with_message(){
+       let hsms_message_from_bytes = HSMSMessage::from_bytes(
+           vec![0x0C,0x00,0x00,0x00,0xFF,0xFF,0x00,0x00,0x00,0x00,0x11,0x11,0x11,0x011,0x01,0x02]) ;
+
+        let hsms_header = HSMSHeader{
+            session_id: SessionID {session_id:0xFFFF},
+            header_byte2: HeaderByte2 {header_byte2:0},
+            header_byte3: 0,
+            p_type: 0,
+            s_type: 0,
+            system_bytes: 0x11111111,
+        };
+        let hsms_message = HSMSMessage{
+            message_length:12,
+            hsms_header:hsms_header.clone(),
+            message_text:Some(vec![0x01,0x02])
+        };
+
+        let hsms_message_bytes = hsms_message.to_bytes();
+        assert_eq!(hsms_message,hsms_message_from_bytes.unwrap());
+    }
 }
